@@ -1,0 +1,145 @@
+#Credit Card Fraud Detection 
+#Downloaded Data set from Kaggle
+
+#Import the Required Libraries
+library(data.table)
+library(randomForest)
+library(DMwR)
+library(DT)
+#Checking the working directories
+rm(list=ls(all=T))
+getwd()
+#Read Data
+dataset <- fread("../input/creditcard.csv", stringsAsFactors = F, sep = ",", header =T)
+```
+
+After we read our data, we take a look into the probablities of our target variable. We already know, from the dataset description, also it is common sense, that such datasets are going to be highly skewed.
+
+```{r}
+prop.table(table(dataset$Class))
+```
+
+The dataset looks highly skewed. Also, we must take into account that majority of our features are PCA components. In this Kernel, we aren't going to do any feature engineering or any feature selection(because the ending PCA components explain less variance). We fit our randomForest model directly to our SMOTed dataset without any featiure selection. 
+
+Split the dataset.
+```{r}
+set.seed(7)
+train <- dataset[1:213093]
+test <- dataset[213094:nrow(dataset)]
+```
+
+I have splitted the dataset so that we get nearly equal number of 1's in our train and test dataset. Remember, 1 is the indicator variable for "yes"(fraud happened) and 0 is the indicator for "no"(fraud didn't happen).
+
+```{r}
+#turning target variable into factor for classification.
+train$Class <- as.factor(train$Class)
+test$Class <- as.factor(test$Class)
+```
+
+In this kernel, i use the DMwR package and use Synthetic Minority Oversampling Technique(SMOTE), by Chawla, to handle the skewness of the data. You can learn about the technique on google and many search sources. Library "unbalanced"
+also proviodes us with the SMOT algorithm but DMwR package eases our work with creating SMOTed dataset and simulataneously applying the classification model.
+
+```{r}
+#set seed for reproducibility
+set.seed(7)
+#our SMOTed dataset and model
+model <- SMOTE(Class~., data = train, perc.over = 200, k = 5, perc.under = 200, learner = "randomForest")
+```
+
+we now have a randomForet model for ourself to predict in test data. We will now create a SMOTed test dataset form our test dataset.
+
+```{r}
+#set seed
+set.seed(7)
+#our SMOTed dataset
+smot_test <- SMOTE(Class~., data = test, perc.over = 200, k = 5, perc.under = 200)
+datatable(smot_test)
+prop.table(table(smot_test$Class))
+```
+
+We now have smotted dataset with us. As you can see, the dataset is now balanced with almost 50:50 occurence of "yes" and "no". Yopu can also find that the dataset is not random and starting rows of Class variable are all 0's, and the ending rows of Class variable have all 1's. We can insert randomness in our test dataset by sampling it.
+
+```{r}
+#ranodm indices.
+split <- sample(1:nrow(smot_test), nrow(smot_test))
+#random dataset
+smot_test <- smot_test[split]
+```
+
+We predict the Class variable with our randomForest model.
+```{r}
+p <- predict(model, smot_test)
+
+
+#Accuracy, Precision and Recall.
+caret::confusionMatrix(smot_test$Class, p)
+```
+We get good accuracy for our model but, look at the Sensitivity and Pos Pred value, they are the Precision and Recall, the difference between them is quite large, theis means that our model has overfitted on predicting positive outcome of our variable that is 0("no").  We need to address this overfit of our model. There are couple of options with us to address this issue. We can prepare more data, we can do feature selection or we can set classification threshold.
+We will set the classification threshold in this kernel and look at the Precision and Recall.
+
+For classification, we get our training dataset. Be careful here, you must set the same seed you set when you modeled.
+```{r}
+#the same seed.
+set.seed(7)
+#training set
+train_smot <- SMOTE(Class~., data = train, perc.over = 200, k = 5,perc.under = 200)
+
+datatable(train_smot, caption = "SMOT training set", style = "bootstrap", selection = list(mode = "multiple", selected = c(1:5, 31), target = "column"))
+#set seed
+set.seed(6)
+#putting randomness.
+split <- sample(1:nrow(train_smot), nrow(train_smot))
+#random train set.
+train_smot <- train_smot[split]
+```
+
+We will set classification threshold which give us the highest AUC score. For this, we take the help of pROC package. We iterate through different threshold and look at which give us the best possible AUC score
+
+```{r, include = FALSE}
+library(pROC)
+```
+
+
+```{r}
+c <- c()
+f <- c()
+j <- 1
+
+for(i in seq(0, 0.5 , 0.01)){
+    set.seed(7)
+    fit <- randomForest(Class~., data = train_smot)
+    pre <- predict(fit, smot_test, type = "prob")[,2]
+    pre <- as.numeric(pre > i)
+    auc <- roc(smot_test$Class, pre)
+    c[j] <- i
+    f[j] <- as.numeric(auc$auc)
+    j <- j + 1
+}
+```
+
+The best threshold classification for our model.
+```{r}
+df <- data.frame(c = c, f = f)
+
+p <- df$c[which.max(df$f)]
+p
+```
+fit the model with this threshold and look at the sensitivity and Pos Pre value.
+```{r}
+fit <- randomForest(Class~., data = train_smot)
+pre <- predict(fit, smot_test, type = "prob")[,2]
+pre <- as.numeric(pre > p)
+```
+
+##Model perfoprmance
+```{r}
+caret::confusionMatrix(smot_test$Class, factor(pre))
+```
+
+Our model did good, we not only raised the accuracy but also brought down the difference between Precision and Recall. if we want, We can try differenct models and do lot more with the dataset. 
+
+##Summary
+The techniques such as Over sampling and Under sampling are good for handling skewed data but they bring their own issues. In fraud detection and credit risk management, we are more inclined towards the probabilities. The downfall of these techniques is that they are biased towards posterior probabilities, which isn't good. to handle such issues, we recaliberate to get the correct probabilties.
+
+
+
